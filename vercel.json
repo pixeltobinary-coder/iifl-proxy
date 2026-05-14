@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/iifl.js": {
+      "maxDuration": 30
+    }
+  }
+}
