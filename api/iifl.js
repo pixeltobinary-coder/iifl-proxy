@@ -41,8 +41,7 @@ module.exports = async function handler(req, res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           secretKey: API_SECRET,
-          appKey: API_KEY,
-          source: 'WebAPI'
+          appKey: API_KEY
         })
       });
       const data = await loginRes.json();
