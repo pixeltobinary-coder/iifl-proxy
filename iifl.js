@@ -1,16 +1,6 @@
-/**
- * IIFL Markets API Proxy — Vercel Serverless Function
- * File: api/iifl.js
- * 
- * This acts as a middleman between your dashboard (browser) and IIFL's API.
- * Needed because browsers block direct API calls (CORS policy).
- * 
- * Deploy this to Vercel (free) — takes 3 minutes.
- */
+module.exports = async function handler(req, res) {
 
-export default async function handler(req, res) {
-
-  // ── CORS headers — allow your dashboard to call this proxy ──
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -19,28 +9,31 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // ── Read which IIFL endpoint to call ──
   const { endpoint } = req.query;
-
-  // ── Your IIFL API credentials (set these in Vercel Environment Variables) ──
   const API_KEY    = process.env.IIFL_API_KEY;
   const API_SECRET = process.env.IIFL_API_SECRET;
+  const BASE = 'https://ttblaze.iifl.com/apimarketdata';
 
-  if (!API_KEY || !API_SECRET) {
-    return res.status(500).json({
-      error: 'IIFL API credentials not configured.',
-      hint: 'Set IIFL_API_KEY and IIFL_API_SECRET in Vercel Environment Variables.'
+  // Quick health check — visit /api/iifl?endpoint=ping to confirm it's working
+  if (endpoint === 'ping') {
+    return res.status(200).json({ 
+      status: 'ok', 
+      hasKey: !!API_KEY, 
+      hasSecret: !!API_SECRET,
+      message: 'IIFL Proxy is running!' 
     });
   }
 
-  const BASE = 'https://ttblaze.iifl.com/apimarketdata';
+  if (!API_KEY || !API_SECRET) {
+    return res.status(500).json({
+      error: 'Missing credentials',
+      hint: 'Add IIFL_API_KEY and IIFL_API_SECRET in Vercel Environment Variables, then redeploy.'
+    });
+  }
 
   try {
 
-    // ────────────────────────────────────────────────────────────
-    // STEP 1: LOGIN — get a session token
-    // Called once per session. Token expires daily.
-    // ────────────────────────────────────────────────────────────
+    // LOGIN
     if (endpoint === 'login') {
       const loginRes = await fetch(`${BASE}/auth/login`, {
         method: 'POST',
@@ -51,14 +44,14 @@ export default async function handler(req, res) {
           source: 'WebAPI'
         })
       });
-      const loginData = await loginRes.json();
-      return res.status(200).json(loginData);
+      const data = await loginRes.json();
+      return res.status(200).json(data);
     }
 
-    // ── All other endpoints need a token passed from the dashboard ──
+    // All other endpoints need a session token
     const token = req.headers['authorization']?.replace('Bearer ', '');
     if (!token) {
-      return res.status(401).json({ error: 'No token. Call /api/iifl?endpoint=login first.' });
+      return res.status(401).json({ error: 'No token. Call ?endpoint=login first.' });
     }
 
     const authHeaders = {
@@ -66,118 +59,53 @@ export default async function handler(req, res) {
       'authorization': token
     };
 
-    // ────────────────────────────────────────────────────────────
-    // STEP 2: QUOTE — live price for one or more stocks
-    // Pass instruments as query: ?endpoint=quote&instruments=RELIANCE:NSE,INFY:NSE
-    // ────────────────────────────────────────────────────────────
+    // QUOTES — live prices
     if (endpoint === 'quote') {
       const rawInstruments = req.query.instruments || '';
-      // Format: "SYMBOL:EXCHANGE" → [{exchangeSegment:1, exchangeInstrumentID: <id>}]
-      // We use a symbol→ID map for your portfolio stocks
-      const instruments = rawInstruments.split(',').map(i => {
-        const [symbol, exchange] = i.split(':');
-        return {
-          exchangeSegment: exchange === 'BSE' ? 11 : 1, // 1=NSE, 11=BSE
-          exchangeInstrumentID: SYMBOL_TO_ID[symbol] || symbol
-        };
-      }).filter(i => i.exchangeInstrumentID);
+      const instruments = rawInstruments.split(',').map(sym => ({
+        exchangeSegment: 1, // NSE
+        exchangeInstrumentID: SYMBOL_TO_ID[sym.split(':')[0]] || sym
+      })).filter(i => i.exchangeInstrumentID);
 
       const quoteRes = await fetch(`${BASE}/instruments/quotes`, {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
           instruments,
-          xtsMessageCode: 1502, // Touchline quote type
+          xtsMessageCode: 1502,
           publishFormat: 'JSON'
         })
       });
-      const quoteData = await quoteRes.json();
-      return res.status(200).json(quoteData);
+      const data = await quoteRes.json();
+      return res.status(200).json(data);
     }
 
-    // ────────────────────────────────────────────────────────────
-    // STEP 3: HOLDINGS — fetch real portfolio from IIFL
-    // ────────────────────────────────────────────────────────────
+    // HOLDINGS
     if (endpoint === 'holdings') {
-      const holdRes = await fetch(
-        'https://ttblaze.iifl.com/interactive/portfolio/holdings',
-        { method: 'GET', headers: authHeaders }
-      );
-      const holdData = await holdRes.json();
-      return res.status(200).json(holdData);
-    }
-
-    // ────────────────────────────────────────────────────────────
-    // STEP 4: OHLC (candle data) — for technical analysis
-    // ────────────────────────────────────────────────────────────
-    if (endpoint === 'ohlc') {
-      const { instrumentID, exchange, interval, from, to } = req.query;
-      const ohlcRes = await fetch(
-        `${BASE}/instruments/ohlc?exchangeSegment=${exchange === 'BSE' ? 11 : 1}&exchangeInstrumentID=${instrumentID}&startTime=${from}&endTime=${to}&compressionValue=${interval || 60}`,
-        { method: 'GET', headers: authHeaders }
-      );
-      const ohlcData = await ohlcRes.json();
-      return res.status(200).json(ohlcData);
+      const r = await fetch('https://ttblaze.iifl.com/interactive/portfolio/holdings', {
+        method: 'GET',
+        headers: authHeaders
+      });
+      return res.status(200).json(await r.json());
     }
 
     return res.status(400).json({ error: `Unknown endpoint: ${endpoint}` });
 
   } catch (err) {
-    console.error('IIFL Proxy Error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
 
-// ── NSE Instrument IDs for Mayank's portfolio ──────────────────────────────
-// These are IIFL's internal instrument IDs for each stock on NSE
-// (exchangeInstrumentID from IIFL's instrument master CSV)
+// NSE Instrument IDs for Mayank's portfolio
 const SYMBOL_TO_ID = {
-  'CIPLA':       1660,
-  'SUNPHARMA':   3351,
-  'BHEL':        526,
-  'URJA':        14418,
-  'APOLLO':      877,
-  'SBIN':        3045,
-  'FEDERALBNK':  1895,
-  'POONAWALLA':  7893,
-  'GEOJITFSL':   2061,
-  'IIFL':        20374,
-  'M&MFIN':      2513,
-  'IDFCFIRSTB':  11184,
-  'IIFLCAPS':    1232,
-  'LICI':        21808,
-  'IREDA':       26000,
-  'TATACAP':     25000,
-  'HCC':         1467,
-  'IRB':         19821,
-  'HGINFRA':     19584,
-  'INFY':        1594,
-  'HCLTECH':     7229,
-  '3IINFOLTD':   29048,
-  'POLICYBZR':   21514,
-  'RELINFRA':    2882,
-  'TATAPOWER':   3426,
-  'NLCINDIA':    20669,
-  'GAIL':        1975,
-  'NHPC':        20286,
-  'TMPV':        3456,
-  'HYUNDAI':     26027,
-  'TMCV':        3432,
-  'TATACONSUM':  3432,
-  'ITC':         1660,
-  'VIPIND':      4254,
-  'MMTC':        2651,
-  'HINDCOPPER':  19672,
-  'COALINDIA':   20374,
-  'BALMLAWRIE':  499,
-  'JMFINANCIL':  2019,
-  'ABCAPITAL':   18534,
-  'PETRONET':    15083,
-  'IDEA':        14366,
-  'IRCTC':       20296,
-  'ETERNAL':     25960,
-  'SWIGGY':      26209,
-  'BSE':         25044,
-  'MON100':      20597,
-  'PHARMABEES':  16675,
+  'CIPLA':1660,'SUNPHARMA':3351,'BHEL':526,'URJA':14418,'APOLLO':877,
+  'SBIN':3045,'FEDERALBNK':1895,'POONAWALLA':7893,'GEOJITFSL':2061,
+  'IIFL':20374,'M&MFIN':2513,'IDFCFIRSTB':11184,'IIFLCAPS':1232,
+  'LICI':21808,'IREDA':26000,'TATACAP':25000,'HCC':1467,'IRB':19821,
+  'HGINFRA':19584,'INFY':1594,'HCLTECH':7229,'POLICYBZR':21514,
+  'RELINFRA':2882,'TATAPOWER':3426,'NLCINDIA':20669,'GAIL':1975,
+  'NHPC':20286,'TATACONSUM':3432,'ITC':1660,'VIPIND':4254,'MMTC':2651,
+  'HINDCOPPER':19672,'COALINDIA':20374,'ABCAPITAL':18534,'PETRONET':15083,
+  'IDEA':14366,'IRCTC':20296,'ETERNAL':25960,'SWIGGY':26209,
+  'VIKRAMSOLR':26100,'BSE':25044,'MON100':20597,'PHARMABEES':16675,
 };
