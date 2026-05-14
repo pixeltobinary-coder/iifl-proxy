@@ -1,3 +1,4 @@
+// FIXED v3 — correct login format + source field
 module.exports = async function handler(req, res) {
 
   // CORS headers
